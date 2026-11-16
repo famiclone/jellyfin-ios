@@ -194,8 +194,8 @@ function getDeviceProfile() {
                     )
                     : 'h264',
                 'MaxAudioChannels': jmpInfo.settings.audio.channels === '2.0' ? '2' : '6',
-                'MinSegments': 1,
-                'BreakOnNonKeyFrames': true
+                'MinSegments': 2,
+                'BreakOnNonKeyFrames': false
             },
             { 'Container': 'jpeg', 'Type': 'Photo' }
         ],
@@ -204,15 +204,11 @@ function getDeviceProfile() {
         'ContainerProfiles': [],
         CodecProfiles,
         'SubtitleProfiles': [
+            { 'Format': 'vtt', 'Method': 'External' },
             { 'Format': 'srt', 'Method': 'External' },
-            { 'Format': 'srt', 'Method': 'Embed' },
             { 'Format': 'ass', 'Method': 'External' },
-            { 'Format': 'ass', 'Method': 'Embed' },
-            { 'Format': 'sub', 'Method': 'Embed' },
-            { 'Format': 'sub', 'Method': 'External' },
-            { 'Format': 'ssa', 'Method': 'Embed' },
             { 'Format': 'ssa', 'Method': 'External' },
-            { 'Format': 'smi', 'Method': 'Embed' },
+            { 'Format': 'sub', 'Method': 'External' },
             { 'Format': 'smi', 'Method': 'External' },
             { 'Format': 'pgssub', 'Method': 'Embed' },
             { 'Format': 'dvdsub', 'Method': 'Embed' },

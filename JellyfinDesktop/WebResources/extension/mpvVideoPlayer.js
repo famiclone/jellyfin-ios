@@ -10,6 +10,136 @@
         return Math.min(100, Math.max(0, Math.round(val)));
     }
 
+    function sanitizeCueText(raw) {
+        if (!raw) return '';
+        return String(raw)
+            .replace(/\{\\[^}]*\}/g, '')          // Strip ASS/SSA override tags like {\an8\pos(...)}
+            .replace(/\\N/g, '\n')
+            .replace(/\\n/g, '\n')
+            .replace(/\\h/g, ' ')
+            .replace(/\r\n/g, '\n')
+            .replace(/<br\s*\/?>/gi, '\n')
+            .replace(/<\/?[a-z][^>]*>/gi, '')     // Strip HTML tags safely (rendered via textContent)
+            .trim();
+    }
+
+    function parseTimestampToMs(ts) {
+        const clean = String(ts).trim().replace(',', '.');
+        const parts = clean.split(':');
+        if (parts.length === 3) {
+            const h = parseFloat(parts[0]) || 0;
+            const m = parseFloat(parts[1]) || 0;
+            const s = parseFloat(parts[2]) || 0;
+            return Math.round((h * 3600 + m * 60 + s) * 1000);
+        }
+        if (parts.length === 2) {
+            const m = parseFloat(parts[0]) || 0;
+            const s = parseFloat(parts[1]) || 0;
+            return Math.round((m * 60 + s) * 1000);
+        }
+        return 0;
+    }
+
+    function parseSubtitlePayload(text) {
+        if (!text) return [];
+        const trimmed = text.trim();
+
+        // 1. Jellyfin Stream.js JSON TrackEvents format
+        if (trimmed.startsWith('{')) {
+            try {
+                const json = JSON.parse(trimmed);
+                if (Array.isArray(json.TrackEvents)) {
+                    return json.TrackEvents.map(ev => ({
+                        startMs: Math.round((ev.StartPositionTicks || 0) / 10000),
+                        endMs: Math.round((ev.EndPositionTicks || 0) / 10000),
+                        text: sanitizeCueText(ev.Text)
+                    })).filter(c => c.text && c.endMs > c.startMs)
+                      .sort((a, b) => a.startMs - b.startMs);
+                }
+            } catch (e) {
+                // Fall through to text parsers
+            }
+        }
+
+        // 2. ASS / SSA format
+        if (/\[Events\]/i.test(trimmed) && /^Dialogue:/m.test(trimmed)) {
+            const lines = trimmed.split(/\r?\n/);
+            let startIdx = 1, endIdx = 2, textIdx = 9;
+            let inEvents = false;
+            const cues = [];
+
+            for (const line of lines) {
+                const l = line.trim();
+                if (/^\[Events\]/i.test(l)) {
+                    inEvents = true;
+                    continue;
+                }
+                if (inEvents && l.startsWith('[')) {
+                    inEvents = false;
+                    continue;
+                }
+                if (inEvents && /^Format:/i.test(l)) {
+                    const cols = l.substring(7).split(',').map(c => c.trim().toLowerCase());
+                    const s = cols.indexOf('start');
+                    const e = cols.indexOf('end');
+                    const t = cols.indexOf('text');
+                    if (s >= 0) startIdx = s;
+                    if (e >= 0) endIdx = e;
+                    if (t >= 0) textIdx = t;
+                    continue;
+                }
+                if (/^Dialogue:/i.test(l)) {
+                    const rest = l.substring(9);
+                    const fields = [];
+                    let pos = 0;
+                    for (let k = 0; k < textIdx; k++) {
+                        const comma = rest.indexOf(',', pos);
+                        if (comma === -1) break;
+                        fields.push(rest.substring(pos, comma).trim());
+                        pos = comma + 1;
+                    }
+                    fields.push(rest.substring(pos));
+                    if (fields.length > textIdx) {
+                        const startMs = parseTimestampToMs(fields[startIdx]);
+                        const endMs = parseTimestampToMs(fields[endIdx]);
+                        const cleaned = sanitizeCueText(fields[textIdx]);
+                        if (cleaned && endMs > startMs) {
+                            cues.push({ startMs, endMs, text: cleaned });
+                        }
+                    }
+                }
+            }
+            return cues.sort((a, b) => a.startMs - b.startMs);
+        }
+
+        // 3. SRT / WebVTT format
+        const blocks = trimmed.replace(/^\uFEFF/, '').split(/\r?\n\r?\n+/);
+        const cues = [];
+        const arrowRe = /((?:\d{1,2}:)?\d{1,2}:\d{2}[.,]\d{1,3})\s*-->\s*((?:\d{1,2}:)?\d{1,2}:\d{2}[.,]\d{1,3})/;
+
+        for (const block of blocks) {
+            const lines = block.split(/\r?\n/);
+            let timingIdx = -1;
+            let match = null;
+            for (let i = 0; i < lines.length; i++) {
+                match = arrowRe.exec(lines[i]);
+                if (match) {
+                    timingIdx = i;
+                    break;
+                }
+            }
+            if (timingIdx >= 0 && match) {
+                const startMs = parseTimestampToMs(match[1]);
+                const endMs = parseTimestampToMs(match[2]);
+                const body = sanitizeCueText(lines.slice(timingIdx + 1).join('\n'));
+                if (body && endMs > startMs) {
+                    cues.push({ startMs, endMs, text: body });
+                }
+            }
+        }
+        return cues.sort((a, b) => a.startMs - b.startMs);
+    }
+
     class mpvVideoPlayer {
         constructor({ events, loading, appRouter, globalize, appHost, appSettings, confirm, dashboard }) {
             this.events = events;
@@ -33,10 +163,16 @@
             this.isFetching = false;
 
             this._videoDialog = undefined;
+            this._subtitleOverlay = null;
+            this._subtitleCueBox = null;
+            this._subtitleCues = [];
+            this._subtitleFetchToken = 0;
+            this._lastRenderedSubText = '';
+
             this._subtitleTrackIndexToSetOnPlaying = undefined;
             this._audioTrackIndexToSetOnPlaying = undefined;
             this._showTrackOffset = undefined;
-            this._currentTrackOffset = undefined;
+            this._currentTrackOffset = 0;
             this._supportedFeatures = undefined;
             this._currentSrc = undefined;
             this._started = undefined;
@@ -66,6 +202,7 @@
                 }
 
                 this._currentTime = time;
+                this._renderActiveSubtitles(time);
                 this.events.trigger(this, 'timeupdate');
             };
 
@@ -148,6 +285,181 @@
             };
         }
 
+        // MARK: - WebKit Retina Subtitle Overlay
+
+        _ensureSubtitleOverlay() {
+            if (!this._subtitleOverlay || !this._subtitleOverlay.parentNode) {
+                let existing = document.querySelector('.jmp-subtitle-overlay');
+                if (!existing) {
+                    existing = document.createElement('div');
+                    existing.className = 'jmp-subtitle-overlay';
+                    const cueBox = document.createElement('div');
+                    cueBox.className = 'jmp-subtitle-cue';
+                    cueBox.style.display = 'none';
+                    existing.appendChild(cueBox);
+                    document.body.appendChild(existing);
+                }
+                this._subtitleOverlay = existing;
+                this._subtitleCueBox = existing.querySelector('.jmp-subtitle-cue');
+            }
+        }
+
+        _clearSubtitles() {
+            this._subtitleFetchToken++;
+            this._subtitleCues = [];
+            this._lastRenderedSubText = '';
+            if (this._subtitleCueBox) {
+                this._subtitleCueBox.textContent = '';
+                this._subtitleCueBox.style.display = 'none';
+            }
+        }
+
+        _removeSubtitleOverlay() {
+            this._clearSubtitles();
+            if (this._subtitleOverlay && this._subtitleOverlay.parentNode) {
+                this._subtitleOverlay.parentNode.removeChild(this._subtitleOverlay);
+            }
+            this._subtitleOverlay = null;
+            this._subtitleCueBox = null;
+        }
+
+        _renderActiveSubtitles(timeMs) {
+            if (!this._subtitleCues || this._subtitleCues.length === 0 || timeMs == null) {
+                if (this._lastRenderedSubText !== '') {
+                    this._lastRenderedSubText = '';
+                    if (this._subtitleCueBox) {
+                        this._subtitleCueBox.textContent = '';
+                        this._subtitleCueBox.style.display = 'none';
+                    }
+                }
+                return;
+            }
+
+            this._ensureSubtitleOverlay();
+            const delayMs = Math.round((this._currentTrackOffset || 0) * 1000);
+            const targetMs = timeMs - delayMs;
+
+            const activeTexts = [];
+            const seen = new Set();
+            for (let i = 0; i < this._subtitleCues.length; i++) {
+                const cue = this._subtitleCues[i];
+                if (cue.startMs > targetMs) break;
+                if (targetMs >= cue.startMs && targetMs <= cue.endMs) {
+                    if (!seen.has(cue.text)) {
+                        seen.add(cue.text);
+                        activeTexts.push(cue.text);
+                    }
+                }
+            }
+
+            const combined = activeTexts.join('\n');
+            if (combined !== this._lastRenderedSubText) {
+                this._lastRenderedSubText = combined;
+                if (this._subtitleCueBox) {
+                    if (combined) {
+                        this._subtitleCueBox.textContent = combined;
+                        this._subtitleCueBox.style.display = 'inline-block';
+                    } else {
+                        this._subtitleCueBox.textContent = '';
+                        this._subtitleCueBox.style.display = 'none';
+                    }
+                }
+            }
+        }
+
+        async _loadWebSubtitlesForStream(index) {
+            this._clearSubtitles();
+            if (index == null || index < 0) {
+                window.api.player.setSubtitleStream(-1);
+                return;
+            }
+
+            const playOptions = this._currentPlayOptions;
+            const streams = playOptions?.mediaSource?.MediaStreams || [];
+            const stream = this.getStreamByIndex(streams, index);
+            if (!stream) {
+                window.api.player.setSubtitleStream(-1);
+                return;
+            }
+
+            const codec = String(stream.Codec || '').toLowerCase();
+            const isBitmap = ['pgssub', 'pgs', 'dvdsub', 'dvbsub', 'vobsub'].includes(codec);
+            if (isBitmap && !stream.IsExternal) {
+                const relIndex = this.getRelativeIndexByType(streams, index, 'Subtitle');
+                window.api.player.setSubtitleStream(relIndex != null ? relIndex : -1);
+                return;
+            }
+
+            // Disable native libVLC text renderer and render crisply in WebKit overlay
+            window.api.player.setSubtitleStream(-1);
+            this._ensureSubtitleOverlay();
+
+            const fetchToken = ++this._subtitleFetchToken;
+
+            let serverOrigin = window.location.origin;
+            let apiKey = null;
+            try {
+                const parsedMediaUrl = new URL(playOptions.url, window.location.href);
+                serverOrigin = parsedMediaUrl.origin;
+                apiKey = parsedMediaUrl.searchParams.get('api_key') || parsedMediaUrl.searchParams.get('ApiKey');
+            } catch (e) {}
+
+            if (!apiKey && window.ApiClient && typeof window.ApiClient.accessToken === 'function') {
+                apiKey = window.ApiClient.accessToken();
+            }
+
+            const itemId = playOptions?.item?.Id;
+            const mediaSourceId = playOptions?.mediaSource?.Id;
+            const candidateUrls = [];
+
+            if (itemId && mediaSourceId) {
+                const q = apiKey ? `?api_key=${encodeURIComponent(apiKey)}` : '';
+                candidateUrls.push(`${serverOrigin}/Videos/${itemId}/${mediaSourceId}/Subtitles/${index}/0/Stream.js${q}`);
+            }
+
+            if (stream.DeliveryUrl) {
+                try {
+                    const resolved = new URL(stream.DeliveryUrl, serverOrigin);
+                    if (apiKey && !resolved.searchParams.has('api_key') && !resolved.searchParams.has('ApiKey')) {
+                        resolved.searchParams.set('api_key', apiKey);
+                    }
+                    candidateUrls.push(resolved.href);
+                } catch (e) {}
+            }
+
+            if (itemId && mediaSourceId) {
+                const q = apiKey ? `?api_key=${encodeURIComponent(apiKey)}` : '';
+                candidateUrls.push(`${serverOrigin}/Videos/${itemId}/${mediaSourceId}/Subtitles/${index}/0/Stream.vtt${q}`);
+                candidateUrls.push(`${serverOrigin}/Videos/${itemId}/${mediaSourceId}/Subtitles/${index}/0/Stream.srt${q}`);
+            }
+
+            const headers = {};
+            if (apiKey) {
+                headers['X-Emby-Token'] = apiKey;
+            }
+
+            for (const subUrl of candidateUrls) {
+                if (fetchToken !== this._subtitleFetchToken) return;
+                try {
+                    const resp = await fetch(subUrl, { credentials: 'include', headers });
+                    if (!resp.ok) continue;
+                    const body = await resp.text();
+                    if (fetchToken !== this._subtitleFetchToken) return;
+                    const cues = parseSubtitlePayload(body);
+                    if (cues.length > 0) {
+                        this._subtitleCues = cues;
+                        console.log(`[Subtitles] Loaded ${cues.length} cues from ${subUrl}`);
+                        if (this._currentTime != null) {
+                            this._renderActiveSubtitles(this._currentTime);
+                        }
+                        return;
+                    }
+                } catch (err) {
+                    console.warn('[Subtitles] Failed candidate URL:', subUrl, err);
+                }
+            }
+        }
+
         currentSrc() {
             return this._currentSrc;
         }
@@ -157,6 +469,7 @@
             this._timeUpdated = false;
             this._currentTime = null;
             this._bufferedRanges = [];
+            this._clearSubtitles();
 
             this.resetSubtitleOffset();
             if (options.fullscreen) {
@@ -234,17 +547,16 @@
                     ? this.getRelativeIndexByType(streams, this._audioTrackIndexToSetOnPlaying, 'Audio')
                     : 1;
 
-                let subtitleParam;
+                // Check if initial subtitle is bitmap or text
+                let nativeSubtitleParam = -1;
                 if (this._subtitleTrackIndexToSetOnPlaying >= 0) {
                     const subStream = this.getStreamByIndex(streams, this._subtitleTrackIndexToSetOnPlaying);
-                    if (subStream && subStream.DeliveryMethod === 'External' && subStream.DeliveryUrl) {
-                        subtitleParam = '#,' + subStream.DeliveryUrl;
-                    } else {
+                    const subCodec = String(subStream?.Codec || '').toLowerCase();
+                    const isBitmap = ['pgssub', 'pgs', 'dvdsub', 'dvbsub', 'vobsub'].includes(subCodec);
+                    if (isBitmap && !subStream?.IsExternal) {
                         const relIndex = this.getRelativeIndexByType(streams, this._subtitleTrackIndexToSetOnPlaying, 'Subtitle');
-                        subtitleParam = relIndex != null ? relIndex : -1;
+                        nativeSubtitleParam = relIndex != null ? relIndex : -1;
                     }
-                } else {
-                    subtitleParam = -1;
                 }
 
                 player.load(
@@ -252,30 +564,19 @@
                     { startMilliseconds: ms, autoplay: true },
                     streamdata,
                     audioRelIndex,
-                    subtitleParam,
+                    nativeSubtitleParam,
                     resolve
                 );
+
+                if (this._subtitleTrackIndexToSetOnPlaying >= 0) {
+                    this._loadWebSubtitlesForStream(this._subtitleTrackIndexToSetOnPlaying);
+                }
             });
         }
 
         setSubtitleStreamIndex(index) {
             this._subtitleTrackIndexToSetOnPlaying = index;
-
-            if (index < 0) {
-                window.api.player.setSubtitleStream(-1);
-                return;
-            }
-
-            const streams = this._currentPlayOptions?.mediaSource?.MediaStreams || [];
-            const stream = this.getStreamByIndex(streams, index);
-
-            if (stream && stream.DeliveryMethod === 'External' && stream.DeliveryUrl) {
-                window.api.player.setSubtitleStream('#,' + stream.DeliveryUrl);
-                return;
-            }
-
-            const relIndex = this.getRelativeIndexByType(streams, index, 'Subtitle');
-            window.api.player.setSubtitleStream(relIndex != null ? relIndex : -1);
+            this._loadWebSubtitlesForStream(index);
         }
 
         setSecondarySubtitleStreamIndex(index) {
@@ -301,9 +602,12 @@
         }
 
         setSubtitleOffset(offset) {
-            const offsetValue = parseFloat(offset);
+            const offsetValue = parseFloat(offset) || 0;
             this._currentTrackOffset = offsetValue;
             window.api.player.setSubtitleDelay(Math.round(offsetValue * 1000));
+            if (this._currentTime != null) {
+                this._renderActiveSubtitles(this._currentTime);
+            }
         }
 
         getSubtitleOffset() {
@@ -333,6 +637,7 @@
 
         onEndedInternal() {
             document.documentElement.classList.remove('jmp-video-active');
+            this._removeSubtitleOverlay();
 
             const stopInfo = {
                 src: this._currentSrc
@@ -358,6 +663,7 @@
 
         removeMediaDialog() {
             document.documentElement.classList.remove('jmp-video-active');
+            this._removeSubtitleOverlay();
 
             window.api.player.stop();
             window.api.player.setVideoRectangle(-1, 0, 0, 0);
@@ -426,6 +732,7 @@
             this.setTransparency(2);
             document.documentElement.classList.add('jmp-video-active');
             this._videoDialog = dlg;
+            this._ensureSubtitleOverlay();
 
             const player = window.api.player;
             if (!this._hasConnection) {
@@ -483,6 +790,8 @@
 
         currentTime(val) {
             if (val != null) {
+                this._currentTime = val;
+                this._renderActiveSubtitles(val);
                 window.api.player.seekTo(val);
                 return;
             }
@@ -639,7 +948,7 @@
 
             mediaCategory.stats.push({
                 label: this.globalize.translate('LabelStreamType'),
-                value: 'Video (MobileVLCKit Direct Play)'
+                value: playOptions.playMethod === 'Transcode' ? 'Video (AVPlayer Native HLS)' : 'Video (Direct Play)'
             });
 
             return Promise.resolve({ categories });
