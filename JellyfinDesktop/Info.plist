@@ -32,7 +32,7 @@
 		<true/>
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Jellyfin Desktop підключається до вашого локального сервера Jellyfin у домашній мережі для перегляду медіатеки та Direct Play відтворення.</string>
+	<string>Jellyfin Desktop connects to your Jellyfin server on your local network to browse your library and stream media via Direct Play.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

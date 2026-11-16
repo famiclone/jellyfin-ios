@@ -166,11 +166,11 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
 
         let alert = UIAlertController(
             title: "Jellyfin Desktop (iPadOS)",
-            message: "Швидке сервісне меню (жест утримання 3 пальцями)",
+            message: "Quick Service Menu (3-finger long press)",
             preferredStyle: .alert
         )
 
-        alert.addAction(UIAlertAction(title: "Оновити сторінку", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: "Reload Page", style: .default) { [weak self] _ in
             self?.rebuildUserScripts()
             self?.webView.reload()
         })
@@ -181,7 +181,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
         case "mobile": nextLayout = "tv"
         default: nextLayout = "desktop"
         }
-        alert.addAction(UIAlertAction(title: "Макет UI: перемкнути на \(nextLayout.uppercased())", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: "Switch UI Layout to \(nextLayout.uppercased())", style: .default) { [weak self] _ in
             SettingsStore.shared.layoutMode = nextLayout
             self?.rebuildUserScripts()
             self?.webView.reload()
@@ -189,19 +189,19 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
 
         let sslEnabled = SettingsStore.shared.ignoreSSLErrors
         alert.addAction(UIAlertAction(
-            title: sslEnabled ? "Вимкнути довіру до self-signed SSL" : "Дозволити self-signed SSL",
+            title: sslEnabled ? "Disable Self-Signed SSL Trust" : "Allow Self-Signed SSL",
             style: .default
         ) { _ in
             SettingsStore.shared.ignoreSSLErrors = !sslEnabled
         })
 
-        alert.addAction(UIAlertAction(title: "Змінити сервер Jellyfin", style: .destructive) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: "Change Jellyfin Server", style: .destructive) { [weak self] _ in
             self?.playerController.stop()
             SettingsStore.shared.userWebClient = ""
             self?.rebuildUserScriptsAndLoadConnectScreen()
         })
 
-        alert.addAction(UIAlertAction(title: "Скасувати", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         present(alert, animated: true)
     }
 

@@ -1,65 +1,53 @@
-# Jellyfin Desktop для iPadOS 15+ (адаптовано під iPad Air 2 / iPadOS 15.8.8)
+# Jellyfin Desktop for iPadOS 15+ (Tuned for iPad Air 2 / iPadOS 15.8.8)
 
-Нативний iOS/iPadOS порт архітектури [`jellyfin/jellyfin-desktop`](https://github.com/jellyfin/jellyfin-desktop), створений спеціально для роботи на **iPad Air 2 (Apple A8X, 2 ГБ ОЗП, iPadOS 15.8.8)** та новіших пристроях з iOS/iPadOS 15.0+.
+A native iOS/iPadOS port of the [`jellyfin/jellyfin-desktop`](https://github.com/jellyfin/jellyfin-desktop) dual-layer architecture, specifically tailored for **iPad Air 2 (Apple A8X, 2 GB RAM, iPadOS 15.8.8)** as well as newer iOS/iPadOS 15.0+ devices.
 
-## Як це працює
+## Architecture
 
-Офіційний десктопний `jellyfin-desktop` використовує `Qt6 WebEngine` (Chromium), який фізично не існує на iOS, та `QWebChannel` + `libmpv`. Цей порт відтворює ту саму двошарову архітектуру засобами iOS 15 SDK:
+Upstream `jellyfin-desktop` relies on `Qt6 WebEngine` (Chromium), which is not available on iOS/iPadOS, paired with `QWebChannel` and `libmpv`. This port reproduces the same dual-layer design using native iOS 15 frameworks:
 
-1. **Нижній нативний відео-шар (`MobileVLCKit 3.6.0` / `libVLC`)**:
-   - **Direct Play** без транскодингу на сервері для контейнерів **MKV, MP4, WebM, AVI**;
-   - Апаратне декодування **H.264 через Apple VideoToolbox** на чипі A8X + багатопотокове програмне декодування FFmpeg (ARM64 NEON);
-   - Повна підтримка субтитрів **ASS / SSA** (через `libass` зі стилями та вбудованими шрифтами), **SRT, PGS, VobSub** (як вбудованих у MKV, так і зовнішніх з Jellyfin) + налаштування затримки субтитрів;
-   - Пряме декодування **FLAC, AC3, E-AC3, DTS, Opus, Vorbis, AAC, MP3**.
-2. **Верхній прозорий шар інтерфейсу (`WKWebView` + `NativeShell` з `jellyfin-desktop`)**:
-   - Інжектить оригінальні розширення `jellyfin-desktop` (`mpvVideoPlayer.js`, `mpvAudioPlayer.js`, `inputPlugin.js`, `nativeshell.js`) через двосторонній міст `WKScriptMessageHandler` (`iosWebChannelShim.js`, сумісний із `QWebChannel`);
-   - Включає набір **ES2023/ES2024 поліфілів (`ios15Polyfills.js`)**, щоб сучасні версії `jellyfin-web` (10.9 / 10.10 / 10.11+) коректно працювали на WebKit iPadOS 15.8.8;
-   - Повна інтеграція з системним плеєром iPadOS (**Lock Screen, Control Center, навушники AirPods / Bluetooth**, клавіатурні скорочення iPad).
-
----
-
-## Як зібрати `.ipa` через GitHub Actions (без локального Xcode)
-
-1. Створіть новий репозиторій на GitHub (можна приватний або публічний).
-2. Відправте цей проєкт у репозиторій:
-   ```bash
-   git init
-   git add .
-   git commit -m "Initial Jellyfin Desktop iOS 15 port"
-   git branch -M main
-   git remote add origin https://github.com/<ВАШ_ЛОГІН>/<НАЗВА_РЕПО>.git
-   git push -u origin main
-   ```
-3. Перейдіть у вкладку **Actions** вашого репозиторію на GitHub — автоматично запуститься workflow **Build Jellyfin Desktop iOS (.ipa)** (триває ~4–6 хвилин першого разу, далі ~1.5–2 хв завдяки кешуванню `MobileVLCKit`).
-4. Відкрийте завершений білд і внизу в секції **Artifacts** завантажте архів **`JellyfinDesktop-iPadOS15-IPA`**, всередині якого будуть два файли:
-   - `JellyfinDesktop-iOS15-unsigned.ipa` — для **Sideloadly / AltStore / SideStore / Feather**;
-   - `JellyfinDesktop-iOS15-TrollStore.tipa` — для **TrollStore**.
+1. **Bottom Native Video Layer (`MobileVLCKit 3.6.0` / `libVLC`)**:
+   - **Direct Play** without server transcoding for **MKV, MP4, WebM, and AVI** containers;
+   - Hardware-accelerated **H.264 decoding via Apple VideoToolbox** on the A8X SoC alongside multi-threaded ARM64 NEON FFmpeg software decoding;
+   - Full **ASS / SSA** styled subtitle rendering (via `libass` with embedded MKV fonts), **SRT, PGS, and VobSub** (both embedded and external streams) with subtitle delay control;
+   - Direct audio decoding for **FLAC, AC3, E-AC3, DTS, Opus, Vorbis, AAC, and MP3**.
+2. **Top Transparent Web UI Layer (`WKWebView` + `NativeShell` from `jellyfin-desktop`)**:
+   - Injects `jellyfin-desktop` client extensions (`mpvVideoPlayer.js`, `mpvAudioPlayer.js`, `inputPlugin.js`, `nativeshell.js`) bridged through `WKScriptMessageHandler` (`iosWebChannelShim.js`, compatible with `QWebChannel`);
+   - Includes **ES2023/ES2024 WebKit polyfills (`ios15Polyfills.js`)** so modern `jellyfin-web` releases (10.9 / 10.10 / 10.11+) run cleanly on iPadOS 15.8.8 WebKit;
+   - Integrates with iPadOS **Lock Screen, Control Center, AirPods / Bluetooth media controls** (`MPNowPlayingInfoCenter` & `MPRemoteCommandCenter`), and hardware iPad keyboard shortcuts.
 
 ---
 
-## Як встановити на iPad Air 2 (iPadOS 15.8.8)
+## Building via GitHub Actions
 
-### Спосіб 1: Sideloadly або AltStore (без джейлбрейку, зі звичайним Apple ID)
-1. Встановіть [Sideloadly](https://sideloadly.io/) на ваш Mac.
-2. Підключіть iPad Air 2 кабелем, перетягніть `JellyfinDesktop-iOS15-unsigned.ipa` у вікно Sideloadly, введіть свій Apple ID та натисніть **Start**.
-3. На iPad перейдіть у **Параметри -> Загальні -> VPN і керування пристроєм** та натисніть **Довіряти** для вашого профілю розробника.
-4. Увімкніть доступ до **Локальної мережі** при першому запуску додатка, щоб клієнт міг бачити ваш домашній сервер Jellyfin (`192.168.x.x:8096`).
+Every push to `main` (or manual **Run workflow** dispatch) triggers `.github/workflows/build-ios.yml`, which generates the Xcode project with `XcodeGen`, installs `MobileVLCKit 3.6.0` via CocoaPods, compiles an `arm64` Release build targeting iOS 15.0, and uploads the **`JellyfinDesktop-iPadOS15-IPA`** artifact containing:
 
-### Спосіб 2: TrollStore (безстроково без 7-денного перепідписування)
-Прошивка **iPadOS 15.8.8 на iPad Air 2** підтримує встановлення через **TrollStore**. Якщо у вас встановлений TrollStore:
-1. Перекиньте `JellyfinDesktop-iOS15-TrollStore.tipa` (або `.ipa`) на iPad через AirDrop / Файли.
-2. Поділіться файлом у **TrollStore** -> натисніть **Install**. Додаток працюватиме постійно без перепідписування.
+- `JellyfinDesktop-iOS15-unsigned.ipa` — for **Sideloadly / AltStore / SideStore / Feather**;
+- `JellyfinDesktop-iOS15-TrollStore.tipa` — for **TrollStore**.
+
+Pushing a version tag (`v*`, e.g. `v1.0.0`) automatically publishes a GitHub Release with both packages attached.
 
 ---
 
-## Поради та керування на iPad Air 2 (Apple A8X)
+## Installing on iPad Air 2 (iPadOS 15.8.8)
 
-- **Налаштування профілю кодеків під A8X**: у меню Jellyfin відкрийте **Профіль користувача -> Client Settings**. За замовчуванням увімкнено оптимальні налаштування для A8X:
-  - **H.264 (до 1080p) у MKV/MP4 + ASS/SRT + FLAC/AC3** грає у режимі **Direct Play** апаратно через VideoToolbox із мінімальним споживанням батареї.
-  - Прапорці **Force Transcode HEVC / 4K / Hi10P / HDR / AV1** увімкнені, щоб важкі 10-бітні 4K HEVC файли сервер автоматично транскодував у легкий H.264. Якщо ви хочете програвати легкі 720p/1080p 8-bit HEVC або 10-bit H.264 аніме напряму процесором iPad — просто зніміть відповідну галочку в **Client Settings**.
-- **Масштабування під екран 4:3 (Zoom / Fit)**: під час перегляду відео натисніть іконку шестерні в плеєрі Jellyfin -> **Aspect Ratio -> Zoom**, щоб розгорнути 16:9 відео на весь 4:3 екран iPad без чорних смуг.
-- **Швидке сервісне меню жестом**: затисніть екран **трьома пальцями на 1 секунду** будь-де в додатку — відкриється нативне меню iPadOS, де можна:
-  - оновити сторінку;
-  - перемкнути режим інтерфейсу (`DESKTOP` / `MOBILE` / `TV`);
-  - увімкнути довіру до самопідписаного SSL-сертифіката;
-  - скинути збережений сервер і повернутися на екран вводу IP-адреси.
+### Option 1: Sideloadly or AltStore (No Jailbreak, Standard Apple ID)
+1. Install [Sideloadly](https://sideloadly.io/) on your computer.
+2. Connect your iPad Air 2 via USB, drag `JellyfinDesktop-iOS15-unsigned.ipa` into Sideloadly, enter your Apple ID, and click **Start**.
+3. On your iPad, open **Settings -> General -> VPN & Device Management** and trust your developer certificate.
+4. Grant **Local Network** permission on first launch so the app can reach your local Jellyfin server (`192.168.x.x:8096`).
+
+### Option 2: TrollStore (Permanent Install without 7-Day Re-signing)
+iPadOS 15.8.8 on iPad Air 2 supports **TrollStore**:
+1. AirDrop or copy `JellyfinDesktop-iOS15-TrollStore.tipa` (or `.ipa`) to your iPad.
+2. Share the file to **TrollStore** and tap **Install**.
+
+---
+
+## Usage Tips for iPad Air 2 (Apple A8X)
+
+- **Codec Profile Settings (`Client Settings`)**: Open your user menu in Jellyfin -> **Client Settings**. Defaults are pre-tuned for the Apple A8X:
+  - **H.264 (up to 1080p) in MKV/MP4 + ASS/SRT + FLAC/AC3** plays via hardware **Direct Play** with minimal battery usage.
+  - **Force Transcode HEVC / 4K / Hi10P / HDR / AV1** options are enabled by default so heavy 4K 10-bit HEVC files are transcoded to H.264 by your server. You can uncheck any of them in **Client Settings** if you want to software Direct Play lower-bitrate 720p/1080p 8-bit HEVC or 10-bit H.264 anime on the iPad CPU.
+- **4:3 Screen Scaling (`Zoom` / `Normal`)**: During playback, tap the gear icon in the Jellyfin OSD -> **Aspect Ratio -> Zoom** to fill the 4:3 Retina display edge-to-edge without black bars.
+- **Quick Service Menu Gesture**: Press and hold **3 fingers for 1 second** anywhere on screen to open the native iPadOS quick menu (Reload Page, Switch UI Layout `DESKTOP` / `MOBILE` / `TV`, Toggle Self-Signed SSL Trust, or Change Jellyfin Server).
