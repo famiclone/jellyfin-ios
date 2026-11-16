@@ -194,7 +194,8 @@ function getDeviceProfile() {
                     )
                     : 'h264',
                 'MaxAudioChannels': jmpInfo.settings.audio.channels === '2.0' ? '2' : '6',
-                'MinSegments': 2,
+                'MinSegments': 1,
+                'SegmentLength': 3,
                 'BreakOnNonKeyFrames': false
             },
             { 'Container': 'jpeg', 'Type': 'Photo' }

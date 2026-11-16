@@ -198,10 +198,10 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
             options: ["AVURLAssetHTTPHeaderFieldsKey": ["User-Agent": userAgent]]
         )
         let item = AVPlayerItem(asset: asset)
-        item.preferredForwardBufferDuration = 8.0
+        item.preferredForwardBufferDuration = 2.5
 
         let player = AVPlayer(playerItem: item)
-        player.automaticallyWaitsToMinimizeStalling = true
+        player.automaticallyWaitsToMinimizeStalling = false
         player.isMuted = currentMuted
         player.volume = currentMuted ? 0.0 : (Float(currentVolume) / 100.0)
         playerView.playerLayer.player = player
@@ -387,11 +387,11 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
         let cacheSetting = SettingsStore.shared.intValue(section: "video", key: "cache", fallback: 25)
         let cachingMs: Int
         if cacheSetting <= 10 {
-            cachingMs = 2000
+            cachingMs = 600
         } else if cacheSetting >= 50 {
-            cachingMs = 6000
+            cachingMs = 2500
         } else {
-            cachingMs = 3500
+            cachingMs = 1000
         }
         media.addOption(":network-caching=\(cachingMs)")
         media.addOption(":http-reconnect")
@@ -588,7 +588,7 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
             self.scheduleVLCStallWatchdog(expectedAfterSeekMs: clamped)
         }
         vlcSeekDebounceWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.10, execute: work)
     }
 
     func currentPositionMs() -> Int64 {

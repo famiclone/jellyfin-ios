@@ -180,6 +180,20 @@
             '  text-shadow: 0 1px 3px rgba(0,0,0,0.95), 0 0 6px rgba(0,0,0,0.85), -1px -1px 0 rgba(0,0,0,0.9), 1px -1px 0 rgba(0,0,0,0.9), -1px 1px 0 rgba(0,0,0,0.9), 1px 1px 0 rgba(0,0,0,0.9);',
             '  white-space: pre-wrap;',
             '  word-break: break-word;',
+            '}',
+            '.jmp-player-loader {',
+            '  width: 58px;',
+            '  height: 58px;',
+            '  border: 4px solid rgba(255, 255, 255, 0.18);',
+            '  border-top-color: #00a4dc;',
+            '  border-radius: 50%;',
+            '  animation: jmp-spin 0.85s linear infinite;',
+            '  pointer-events: none;',
+            '  box-shadow: 0 0 24px rgba(0, 0, 0, 0.55);',
+            '}',
+            '@keyframes jmp-spin {',
+            '  0% { transform: rotate(0deg); }',
+            '  100% { transform: rotate(360deg); }',
             '}'
         ].join('\n');
         (document.head || document.documentElement).appendChild(style);

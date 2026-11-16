@@ -193,11 +193,11 @@ final class SettingsStore {
                     [
                         "key": "cache",
                         "displayName": "Network Stream Cache",
-                        "help": "Tuned for iPad Air 2 (2 GB RAM).",
+                        "help": "Pre-buffer duration before playback starts (lower = faster startup & seeking).",
                         "options": [
-                            ["value": 10, "title": "Small (1.5s)"],
-                            ["value": 25, "title": "Default (3s)"],
-                            ["value": 50, "title": "Large (5s)"]
+                            ["value": 10, "title": "Fast (0.6s)"],
+                            ["value": 25, "title": "Default (1.0s)"],
+                            ["value": 50, "title": "Large (2.5s)"]
                         ]
                     ],
                     [
