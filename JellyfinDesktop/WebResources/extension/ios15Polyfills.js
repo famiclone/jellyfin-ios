@@ -136,13 +136,21 @@
         var style = document.createElement('style');
         style.id = 'jmp-ios-transparency-style';
         style.textContent = [
-            'html.jmp-video-active, html.jmp-video-active body {',
+            'html.jmp-video-active,',
+            'html.jmp-video-active body,',
+            'html.jmp-video-active #reactRoot,',
+            'html.jmp-video-active .skinBody,',
+            'html.jmp-video-active .mainAnimatedPages,',
+            'html.jmp-video-active #videoOsdPage,',
+            'html.jmp-video-active .videoOsdPage,',
+            'html.jmp-video-active .videoPlayerContainer {',
             '  background: transparent !important;',
             '  background-color: transparent !important;',
             '}',
             'html.jmp-video-active .backgroundContainer,',
             'html.jmp-video-active .backdropContainer {',
             '  display: none !important;',
+            '  opacity: 0 !important;',
             '  background: transparent !important;',
             '}'
         ].join('\n');

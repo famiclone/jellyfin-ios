@@ -57,6 +57,42 @@ window.NativeShell = {
 function getDeviceProfile() {
     const CodecProfiles = [];
 
+    const h264Conditions = [
+        {
+            'Condition': 'EqualsAny',
+            'Property': 'VideoProfile',
+            'Value': 'high|main|baseline|constrained baseline|high 10',
+            'IsRequired': false
+        },
+        {
+            'Condition': 'LessThanEqual',
+            'Property': 'VideoLevel',
+            'Value': '42',
+            'IsRequired': false
+        }
+    ];
+
+    if (jmpInfo.settings.video.force_transcode_hi10p) {
+        h264Conditions[0] = {
+            'Condition': 'EqualsAny',
+            'Property': 'VideoProfile',
+            'Value': 'high|main|baseline|constrained baseline',
+            'IsRequired': false
+        };
+        h264Conditions.push({
+            'Condition': 'LessThanEqual',
+            'Property': 'VideoBitDepth',
+            'Value': '8',
+            'IsRequired': false
+        });
+    }
+
+    CodecProfiles.push({
+        'Type': 'Video',
+        'Codec': 'h264',
+        'Conditions': h264Conditions
+    });
+
     if (jmpInfo.settings.video.force_transcode_dovi) {
         CodecProfiles.push({
             'Type': 'Video',
@@ -64,7 +100,8 @@ function getDeviceProfile() {
                 {
                     'Condition': 'NotEquals',
                     'Property': 'VideoRangeType',
-                    'Value': 'DOVI'
+                    'Value': 'DOVI',
+                    'IsRequired': false
                 }
             ]
         });
@@ -77,7 +114,8 @@ function getDeviceProfile() {
                 {
                     'Condition': 'Equals',
                     'Property': 'VideoRangeType',
-                    'Value': 'SDR'
+                    'Value': 'SDR',
+                    'IsRequired': false
                 }
             ]
         });
@@ -90,46 +128,8 @@ function getDeviceProfile() {
                 {
                     'Condition': 'LessThanEqual',
                     'Property': 'VideoBitDepth',
-                    'Value': '8'
-                }
-            ]
-        });
-    }
-
-    if (jmpInfo.settings.video.force_transcode_hevc) {
-        CodecProfiles.push({
-            'Type': 'Video',
-            'Codec': 'hevc',
-            'Conditions': [
-                {
-                    'Condition': 'Equals',
-                    'Property': 'Width',
-                    'Value': '0'
-                }
-            ]
-        });
-        CodecProfiles.push({
-            'Type': 'Video',
-            'Codec': 'h265',
-            'Conditions': [
-                {
-                    'Condition': 'Equals',
-                    'Property': 'Width',
-                    'Value': '0'
-                }
-            ]
-        });
-    }
-
-    if (jmpInfo.settings.video.force_transcode_av1) {
-        CodecProfiles.push({
-            'Type': 'Video',
-            'Codec': 'av1',
-            'Conditions': [
-                {
-                    'Condition': 'Equals',
-                    'Property': 'Width',
-                    'Value': '0'
+                    'Value': '8',
+                    'IsRequired': false
                 }
             ]
         });
@@ -142,12 +142,14 @@ function getDeviceProfile() {
                 {
                     'Condition': 'LessThanEqual',
                     'Property': 'Width',
-                    'Value': '1920'
+                    'Value': '1920',
+                    'IsRequired': false
                 },
                 {
                     'Condition': 'LessThanEqual',
                     'Property': 'Height',
-                    'Value': '1080'
+                    'Value': '1080',
+                    'IsRequired': false
                 }
             ]
         });
@@ -156,12 +158,24 @@ function getDeviceProfile() {
     const DirectPlayProfiles = [{ 'Type': 'Audio' }, { 'Type': 'Photo' }];
 
     if (!jmpInfo.settings.video.always_force_transcode) {
-        DirectPlayProfiles.push({ 'Type': 'Video' });
+        const directVideoCodecs = ['h264', 'mpeg4', 'mpeg2video', 'vp8', 'vp9'];
+        if (!jmpInfo.settings.video.force_transcode_hevc) {
+            directVideoCodecs.push('hevc', 'h265');
+        }
+        if (!jmpInfo.settings.video.force_transcode_av1) {
+            directVideoCodecs.push('av1');
+        }
+        DirectPlayProfiles.push({
+            'Type': 'Video',
+            'VideoCodec': directVideoCodecs.join(','),
+            'AudioCodec': 'aac,mp3,ac3,eac3,dts,dca,flac,alac,opus,vorbis,pcm,pcm_s16le,pcm_s24le,truehd'
+        });
     }
 
     return {
         'Name': 'Jellyfin Desktop iOS',
         'MaxStaticBitrate': 120000000,
+        'MaxStreamingBitrate': 120000000,
         'MusicStreamingTranscodingBitrate': 384000,
         'TimelineOffsetSeconds': 5,
         'TranscodingProfiles': [
@@ -170,15 +184,18 @@ function getDeviceProfile() {
                 'Container': 'ts',
                 'Type': 'Video',
                 'Protocol': 'hls',
-                'AudioCodec': 'aac,mp3,ac3,opus,vorbis',
+                'Context': 'Streaming',
+                'AudioCodec': 'aac,mp3,ac3',
                 'VideoCodec': jmpInfo.settings.video.allow_transcode_to_hevc
                     ? (
                         jmpInfo.settings.video.prefer_transcode_to_h265
-                            ? 'h265,hevc,h264,mpeg4,mpeg2video'
-                            : 'h264,h265,hevc,mpeg4,mpeg2video'
+                            ? 'h265,hevc,h264'
+                            : 'h264,h265,hevc'
                     )
-                    : 'h264,mpeg4,mpeg2video',
-                'MaxAudioChannels': jmpInfo.settings.audio.channels === '2.0' ? '2' : '6'
+                    : 'h264',
+                'MaxAudioChannels': jmpInfo.settings.audio.channels === '2.0' ? '2' : '6',
+                'MinSegments': 1,
+                'BreakOnNonKeyFrames': true
             },
             { 'Container': 'jpeg', 'Type': 'Photo' }
         ],

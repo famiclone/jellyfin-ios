@@ -15,16 +15,17 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
         return view
     }()
 
-    private let videoDrawableView: UIView = {
-        let view = UIView()
-        view.backgroundColor = .black
-        view.isUserInteractionEnabled = false
-        return view
-    }()
-
     var onEmitSignal: ((String, [Any]) -> Void)?
 
-    private let mediaPlayer = VLCMediaPlayer()
+    private var mediaPlayer: VLCMediaPlayer?
+    private var videoDrawableView: UIView?
+
+    private var currentStreamUrl: String = ""
+    private var currentOptions: [String: Any] = [:]
+    private var currentMetadata: [String: Any] = [:]
+    private var usingSoftwareFallback = false
+    private var didCheckDisplayedFrames = false
+    private var playbackPlayingStartPosMs: Int64 = -1
 
     private var isStoppingManually = false
     private var hasEmittedInitialPlaying = false
@@ -36,13 +37,12 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
     private var lastKnownDurationMs: Int64 = 0
     private var currentVolume: Int = 100
     private var currentMuted: Bool = false
+    private var currentRatePermille: Int = 1000
+    private var currentSubtitleDelayMs: Int64 = 0
+    private var currentAudioDelayMs: Int64 = 0
 
     override init() {
         super.init()
-        videoContainerView.addSubview(videoDrawableView)
-        mediaPlayer.delegate = self
-        mediaPlayer.drawable = videoDrawableView
-
         SettingsStore.shared.onAspectChanged = { [weak self] _ in
             DispatchQueue.main.async {
                 self?.layoutVideoDrawable()
@@ -63,7 +63,25 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
         audioStream: Any?,
         subtitleStream: Any?
     ) {
-        stopInternal(silent: true)
+        startPlaybackSession(
+            url: rawUrl,
+            options: options,
+            metadata: metadata,
+            audioStream: audioStream,
+            subtitleStream: subtitleStream,
+            forceSoftwareDecoding: false
+        )
+    }
+
+    private func startPlaybackSession(
+        url rawUrl: String,
+        options: [String: Any],
+        metadata: [String: Any],
+        audioStream: Any?,
+        subtitleStream: Any?,
+        forceSoftwareDecoding: Bool
+    ) {
+        tearDownActivePlayer(silent: true)
 
         guard let streamURL = URL(string: rawUrl) else {
             onEmitSignal?("error", ["Invalid media URL"])
@@ -71,6 +89,19 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
         }
 
         try? AVAudioSession.sharedInstance().setActive(true)
+
+        currentStreamUrl = rawUrl
+        currentOptions = options
+        currentMetadata = metadata
+
+        let userDisabledHwDec = SettingsStore.shared.stringValue(
+            section: "video",
+            key: "hardwareDecoding",
+            fallback: "enabled"
+        ) == "disabled"
+        usingSoftwareFallback = forceSoftwareDecoding || userDisabledHwDec
+        didCheckDisplayedFrames = false
+        playbackPlayingStartPosMs = -1
 
         let mediaType = (metadata["type"] as? String)?.lowercased() ?? "video"
         isAudioOnlyMedia = (mediaType == "music" || mediaType == "audio")
@@ -89,9 +120,35 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
         pendingAudioStream = audioStream
         pendingSubtitleStream = subtitleStream
 
+        // Prepare non-zero drawable view BEFORE creating VLCMediaPlayer and calling play()
+        if !isAudioOnlyMedia {
+            videoContainerView.isHidden = false
+            videoContainerView.superview?.layoutIfNeeded()
+            videoContainerView.layoutIfNeeded()
+            UIApplication.shared.isIdleTimerDisabled = true
+        }
+
+        let initialBounds = videoContainerView.bounds.width > 0
+            ? videoContainerView.bounds
+            : UIScreen.main.bounds
+        let drawable = UIView(frame: initialBounds)
+        drawable.backgroundColor = .black
+        drawable.isUserInteractionEnabled = false
+        videoContainerView.addSubview(drawable)
+        self.videoDrawableView = drawable
+
+        var vlcOptions: [String] = []
+        if usingSoftwareFallback {
+            vlcOptions.append("--no-videotoolbox")
+        }
+
+        let player = vlcOptions.isEmpty ? VLCMediaPlayer() : VLCMediaPlayer(options: vlcOptions)
+        player.delegate = self
+        player.drawable = drawable
+        self.mediaPlayer = player
+
         let media = VLCMedia(url: streamURL)
 
-        // Network cache tuned for iPad Air 2 (2 GB RAM)
         let cacheSetting = SettingsStore.shared.intValue(section: "video", key: "cache", fallback: 25)
         let cachingMs: Int
         if cacheSetting <= 10 {
@@ -107,8 +164,8 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
             ?? SettingsStore.shared.userAgent
         media.addOption(":http-user-agent=\(userAgent)")
 
-        if SettingsStore.shared.stringValue(section: "video", key: "hardwareDecoding", fallback: "enabled") == "disabled" {
-            media.addOption(":avcodec-hw=none")
+        if usingSoftwareFallback {
+            media.addOption(":no-videotoolbox")
         }
 
         if SettingsStore.shared.boolValue(section: "video", key: "deinterlace") {
@@ -124,53 +181,63 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
             media.addOption(":start-time=\(startSeconds)")
         }
 
-        mediaPlayer.media = media
+        player.media = media
+        layoutVideoDrawable()
 
-        if !isAudioOnlyMedia {
-            videoContainerView.isHidden = false
-            layoutVideoDrawable()
-            UIApplication.shared.isIdleTimerDisabled = true
-        }
-
-        // Attach external subtitle slave immediately if provided as "#,https://..."
+        // Attach external subtitle slave if provided as "#,https://..."
         if let subStr = subtitleStream as? String, subStr.hasPrefix("#,") {
             let extUrlStr = String(subStr.dropFirst(2))
             if let extURL = URL(string: extUrlStr) {
-                mediaPlayer.addPlaybackSlave(extURL, type: .subtitle, enforce: true)
-                pendingSubtitleStream = nil
+                player.addPlaybackSlave(extURL, type: .subtitle, enforce: true)
             }
         }
 
         let autoplay = (options["autoplay"] as? Bool) ?? true
-        mediaPlayer.play()
+        player.play()
         if !autoplay {
-            mediaPlayer.pause()
+            player.pause()
         }
     }
 
     func play() {
         if !isAudioOnlyMedia {
             UIApplication.shared.isIdleTimerDisabled = true
+            videoContainerView.isHidden = false
         }
-        mediaPlayer.play()
+        mediaPlayer?.play()
     }
 
     func pause() {
-        mediaPlayer.pause()
+        mediaPlayer?.pause()
     }
 
     func stop() {
-        stopInternal(silent: false)
+        tearDownActivePlayer(silent: false)
     }
 
-    private func stopInternal(silent: Bool) {
+    /// Detaches drawable & delegate immediately on main thread and stops libVLC asynchronously
+    /// so tearing down OpenGL ES vout never races with the next movie's drawable view.
+    private func tearDownActivePlayer(silent: Bool) {
         isStoppingManually = true
         UIApplication.shared.isIdleTimerDisabled = false
-        if mediaPlayer.isPlaying || mediaPlayer.media != nil {
-            mediaPlayer.stop()
-            mediaPlayer.media = nil
-        }
+
+        let oldPlayer = self.mediaPlayer
+        let oldDrawable = self.videoDrawableView
+        self.mediaPlayer = nil
+        self.videoDrawableView = nil
+
+        oldPlayer?.delegate = nil
+        oldPlayer?.drawable = nil
+        oldDrawable?.removeFromSuperview()
         videoContainerView.isHidden = true
+
+        if let playerToStop = oldPlayer {
+            DispatchQueue.global(qos: .userInitiated).async {
+                playerToStop.stop()
+                playerToStop.media = nil
+            }
+        }
+
         if !silent {
             onEmitSignal?("canceled", [])
             onEmitSignal?("stopped", [])
@@ -178,38 +245,41 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
     }
 
     func seekTo(ms: Int64) {
+        guard let player = mediaPlayer else { return }
         let clamped = max(Int64(0), ms)
-        mediaPlayer.time = VLCTime(int: Int32(clamping: clamped))
+        player.time = VLCTime(int: Int32(clamping: clamped))
         lastReportedPositionMs = clamped
+        playbackPlayingStartPosMs = -1
         onEmitSignal?("positionUpdate", [clamped])
     }
 
     func currentPositionMs() -> Int64 {
-        let raw = Int64(mediaPlayer.time.intValue)
-        return max(0, raw)
+        guard let player = mediaPlayer else { return 0 }
+        return max(0, Int64(player.time.intValue))
     }
 
     func currentDurationMs() -> Int64 {
-        let raw = Int64(mediaPlayer.media?.length.intValue ?? 0)
+        let raw = Int64(mediaPlayer?.media?.length.intValue ?? 0)
         return raw > 0 ? raw : lastKnownDurationMs
     }
 
     func setVolume(_ volume: Int) {
         currentVolume = min(100, max(0, volume))
         if !currentMuted {
-            mediaPlayer.audio?.volume = Int32(currentVolume)
+            mediaPlayer?.audio?.volume = Int32(currentVolume)
         }
     }
 
     func setMuted(_ muted: Bool) {
         currentMuted = muted
-        mediaPlayer.audio?.isMuted = muted
-        mediaPlayer.audio?.volume = muted ? 0 : Int32(currentVolume)
+        mediaPlayer?.audio?.isMuted = muted
+        mediaPlayer?.audio?.volume = muted ? 0 : Int32(currentVolume)
     }
 
     func setPlaybackRate(permille: Int) {
+        currentRatePermille = permille
         let rate = max(0.25, min(4.0, Float(permille) / 1000.0))
-        mediaPlayer.rate = rate
+        mediaPlayer?.rate = rate
         onEmitSignal?("playbackRateChanged", [Double(rate)])
     }
 
@@ -219,30 +289,31 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
     }
 
     func setSubtitleStream(_ streamParam: Any?) {
+        pendingSubtitleStream = streamParam
         if let subStr = streamParam as? String, subStr.hasPrefix("#,") {
             let extUrlStr = String(subStr.dropFirst(2))
             if let extURL = URL(string: extUrlStr) {
-                pendingSubtitleStream = nil
-                mediaPlayer.addPlaybackSlave(extURL, type: .subtitle, enforce: true)
+                mediaPlayer?.addPlaybackSlave(extURL, type: .subtitle, enforce: true)
             }
             return
         }
-        pendingSubtitleStream = streamParam
         applySubtitleStreamIfReady(streamParam)
     }
 
     func setSubtitleDelay(ms: Int64) {
-        mediaPlayer.currentVideoSubTitleDelay = Int(ms) * 1000
+        currentSubtitleDelayMs = ms
+        mediaPlayer?.currentVideoSubTitleDelay = Int(ms) * 1000
     }
 
     func setAudioDelay(ms: Int64) {
-        mediaPlayer.currentAudioPlaybackDelay = Int(ms) * 1000
+        currentAudioDelayMs = ms
+        mediaPlayer?.currentAudioPlaybackDelay = Int(ms) * 1000
     }
 
     func setVideoRectangle(x: Int, y: Int, w: Int, h: Int) {
         if x < 0 {
             videoContainerView.isHidden = true
-        } else if !isAudioOnlyMedia && mediaPlayer.media != nil {
+        } else if !isAudioOnlyMedia && mediaPlayer != nil {
             videoContainerView.isHidden = false
             layoutVideoDrawable()
         }
@@ -255,6 +326,7 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
             return num.intValue
         }
         if let str = param as? String {
+            if str.hasPrefix("#,") { return nil }
             let cleaned = str.trimmingCharacters(in: CharacterSet(charactersIn: "# "))
             if cleaned.isEmpty { return -1 }
             return Int(cleaned)
@@ -262,40 +334,51 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
         return nil
     }
 
+    private func ensurePrimaryVideoTrackSelected() {
+        guard !isAudioOnlyMedia, let player = mediaPlayer else { return }
+        if player.currentVideoTrackIndex < 0 {
+            let rawVideoIds = (player.videoTrackIndexes as? [NSNumber])?.map { $0.int32Value } ?? []
+            if let firstValidVideoId = rawVideoIds.first(where: { $0 >= 0 }) {
+                player.currentVideoTrackIndex = firstValidVideoId
+            }
+        }
+    }
+
     private func applyAudioStreamIfReady(_ param: Any?) {
-        guard let relIndex = parseRelativeTrackIndex(param) else { return }
+        guard let player = mediaPlayer, let relIndex = parseRelativeTrackIndex(param) else { return }
         if relIndex <= 0 {
-            mediaPlayer.currentAudioTrackIndex = -1
+            player.currentAudioTrackIndex = -1
             return
         }
-        let rawIds = (mediaPlayer.audioTrackIndexes as? [NSNumber])?.map { $0.int32Value } ?? []
+        let rawIds = (player.audioTrackIndexes as? [NSNumber])?.map { $0.int32Value } ?? []
         let validIds = rawIds.filter { $0 >= 0 }
         guard !validIds.isEmpty else { return }
         let targetIdx = min(max(0, relIndex - 1), validIds.count - 1)
-        mediaPlayer.currentAudioTrackIndex = validIds[targetIdx]
+        player.currentAudioTrackIndex = validIds[targetIdx]
     }
 
     private func applySubtitleStreamIfReady(_ param: Any?) {
-        guard let relIndex = parseRelativeTrackIndex(param) else { return }
+        guard let player = mediaPlayer, let relIndex = parseRelativeTrackIndex(param) else { return }
         if relIndex <= 0 {
-            mediaPlayer.currentVideoSubTitleIndex = -1
+            player.currentVideoSubTitleIndex = -1
             return
         }
-        let rawIds = (mediaPlayer.videoSubTitlesIndexes as? [NSNumber])?.map { $0.int32Value } ?? []
+        let rawIds = (player.videoSubTitlesIndexes as? [NSNumber])?.map { $0.int32Value } ?? []
         let validIds = rawIds.filter { $0 >= 0 }
         guard !validIds.isEmpty else { return }
         let targetIdx = min(max(0, relIndex - 1), validIds.count - 1)
-        mediaPlayer.currentVideoSubTitleIndex = validIds[targetIdx]
+        player.currentVideoSubTitleIndex = validIds[targetIdx]
     }
 
     // MARK: - Aspect Ratio Layout (4:3 iPad Air 2 Retina display support)
 
     func layoutVideoDrawable() {
+        guard let drawable = videoDrawableView else { return }
         let bounds = videoContainerView.bounds
         guard bounds.width > 0, bounds.height > 0 else { return }
 
         let aspectSetting = SettingsStore.shared.stringValue(section: "video", key: "aspect", fallback: "normal")
-        let videoSize = mediaPlayer.videoSize
+        let videoSize = mediaPlayer?.videoSize ?? .zero
         let sourceAspect: CGFloat = (videoSize.width > 0 && videoSize.height > 0)
             ? (videoSize.width / videoSize.height)
             : (16.0 / 9.0)
@@ -303,7 +386,6 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
 
         switch aspectSetting {
         case "zoom":
-            // Proportionally scale up so video fills the entire 4:3 iPad screen with no black bars
             var drawW = bounds.width
             var drawH = bounds.height
             if sourceAspect > containerAspect {
@@ -311,7 +393,7 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
             } else {
                 drawH = bounds.width / sourceAspect
             }
-            videoDrawableView.frame = CGRect(
+            drawable.frame = CGRect(
                 x: (bounds.width - drawW) * 0.5,
                 y: (bounds.height - drawH) * 0.5,
                 width: drawW,
@@ -319,7 +401,6 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
             )
 
         case "stretch":
-            // Stretch video to fill 4:3 container
             var drawW = bounds.width
             var drawH = bounds.height
             if sourceAspect > containerAspect {
@@ -327,7 +408,7 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
             } else {
                 drawW = bounds.width * (containerAspect / sourceAspect)
             }
-            videoDrawableView.frame = CGRect(
+            drawable.frame = CGRect(
                 x: (bounds.width - drawW) * 0.5,
                 y: (bounds.height - drawH) * 0.5,
                 width: drawW,
@@ -336,7 +417,7 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
 
         case "force_16_9":
             let targetH = bounds.width * (9.0 / 16.0)
-            videoDrawableView.frame = CGRect(
+            drawable.frame = CGRect(
                 x: 0,
                 y: (bounds.height - targetH) * 0.5,
                 width: bounds.width,
@@ -346,7 +427,7 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
         case "force_4_3":
             let targetW = min(bounds.width, bounds.height * (4.0 / 3.0))
             let targetH = targetW * (3.0 / 4.0)
-            videoDrawableView.frame = CGRect(
+            drawable.frame = CGRect(
                 x: (bounds.width - targetW) * 0.5,
                 y: (bounds.height - targetH) * 0.5,
                 width: targetW,
@@ -354,30 +435,88 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
             )
 
         default:
-            videoDrawableView.frame = bounds
+            drawable.frame = bounds
+        }
+    }
+
+    // MARK: - Self-Healing VideoToolbox -> Software FFmpeg Fallback
+
+    private func checkVideoOutputHealth(atPositionMs posMs: Int64) {
+        guard !isAudioOnlyMedia,
+              !usingSoftwareFallback,
+              !didCheckDisplayedFrames,
+              let player = mediaPlayer,
+              let media = player.media else {
+            return
+        }
+
+        if playbackPlayingStartPosMs < 0 {
+            playbackPlayingStartPosMs = posMs
+            return
+        }
+
+        let elapsedPlayingMs = posMs - playbackPlayingStartPosMs
+        guard elapsedPlayingMs >= 2200 else { return }
+
+        didCheckDisplayedFrames = true
+        let displayed = Int(media.numberOfDisplayedPictures)
+        if displayed == 0 {
+            NSLog("[JellyfinDesktop] VideoToolbox displayed 0 frames after \(elapsedPlayingMs)ms; switching to software FFmpeg (--no-videotoolbox) at \(posMs)ms")
+            var retryOptions = currentOptions
+            retryOptions["startMilliseconds"] = posMs
+            retryOptions["autoplay"] = true
+            let savedAudio = pendingAudioStream
+            let savedSub = pendingSubtitleStream
+            let savedUrl = currentStreamUrl
+            let savedMeta = currentMetadata
+
+            startPlaybackSession(
+                url: savedUrl,
+                options: retryOptions,
+                metadata: savedMeta,
+                audioStream: savedAudio,
+                subtitleStream: savedSub,
+                forceSoftwareDecoding: true
+            )
         }
     }
 
     // MARK: - VLCMediaPlayerDelegate
 
     func mediaPlayerStateChanged(_ aNotification: Notification) {
-        let state = mediaPlayer.state
+        guard let player = aNotification.object as? VLCMediaPlayer,
+              player === self.mediaPlayer else {
+            return
+        }
+
+        let state = player.state
 
         switch state {
         case .playing:
             if !hasEmittedInitialPlaying {
                 hasEmittedInitialPlaying = true
 
+                ensurePrimaryVideoTrackSelected()
                 if let audio = pendingAudioStream {
                     applyAudioStreamIfReady(audio)
                 }
-                if let sub = pendingSubtitleStream {
+                if let sub = pendingSubtitleStream, !(sub is String && (sub as! String).hasPrefix("#,")) {
                     applySubtitleStreamIfReady(sub)
                 }
+                if currentSubtitleDelayMs != 0 {
+                    player.currentVideoSubTitleDelay = Int(currentSubtitleDelayMs) * 1000
+                }
+                if currentAudioDelayMs != 0 {
+                    player.currentAudioPlaybackDelay = Int(currentAudioDelayMs) * 1000
+                }
+                if currentRatePermille != 1000 {
+                    player.rate = max(0.25, min(4.0, Float(currentRatePermille) / 1000.0))
+                }
+                setMuted(currentMuted)
                 if pendingStartMs > 0 {
                     let currentPos = currentPositionMs()
                     if abs(currentPos - pendingStartMs) > 3000 {
-                        mediaPlayer.time = VLCTime(int: Int32(clamping: pendingStartMs))
+                        player.time = VLCTime(int: Int32(clamping: pendingStartMs))
                     }
                     pendingStartMs = 0
                 }
@@ -410,6 +549,22 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
             UIApplication.shared.isIdleTimerDisabled = false
 
         case .error:
+            if !isAudioOnlyMedia && !usingSoftwareFallback && !isStoppingManually {
+                NSLog("[JellyfinDesktop] VLCMediaPlayer hardware decode error; retrying with software FFmpeg (--no-videotoolbox)")
+                var retryOptions = currentOptions
+                if lastReportedPositionMs > 0 {
+                    retryOptions["startMilliseconds"] = lastReportedPositionMs
+                }
+                startPlaybackSession(
+                    url: currentStreamUrl,
+                    options: retryOptions,
+                    metadata: currentMetadata,
+                    audioStream: pendingAudioStream,
+                    subtitleStream: pendingSubtitleStream,
+                    forceSoftwareDecoding: true
+                )
+                return
+            }
             UIApplication.shared.isIdleTimerDisabled = false
             videoContainerView.isHidden = true
             if !isStoppingManually {
@@ -418,10 +573,11 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
 
         case .opening, .esAdded:
             if state == .esAdded && hasEmittedInitialPlaying {
+                ensurePrimaryVideoTrackSelected()
                 if let audio = pendingAudioStream {
                     applyAudioStreamIfReady(audio)
                 }
-                if let sub = pendingSubtitleStream {
+                if let sub = pendingSubtitleStream, !(sub is String && (sub as! String).hasPrefix("#,")) {
                     applySubtitleStreamIfReady(sub)
                 }
                 layoutVideoDrawable()
@@ -433,6 +589,11 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
     }
 
     func mediaPlayerTimeChanged(_ aNotification: Notification) {
+        guard let player = aNotification.object as? VLCMediaPlayer,
+              player === self.mediaPlayer else {
+            return
+        }
+
         let dur = currentDurationMs()
         if dur > 0 && dur != lastKnownDurationMs {
             lastKnownDurationMs = dur
@@ -440,6 +601,8 @@ final class VLCPlayerController: NSObject, VLCMediaPlayerDelegate {
         }
 
         let pos = currentPositionMs()
+        checkVideoOutputHealth(atPositionMs: pos)
+
         if lastReportedPositionMs < 0 || abs(pos - lastReportedPositionMs) >= 150 {
             lastReportedPositionMs = pos
             onEmitSignal?("positionUpdate", [pos])

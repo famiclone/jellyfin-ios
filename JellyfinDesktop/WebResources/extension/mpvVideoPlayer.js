@@ -395,10 +395,10 @@
         }
 
         createMediaElement(options) {
-            const existing = document.querySelector('.videoPlayerContainer');
+            let dlg = document.querySelector('.videoPlayerContainer');
 
-            if (!existing) {
-                const dlg = document.createElement('div');
+            if (!dlg) {
+                dlg = document.createElement('div');
                 dlg.classList.add('videoPlayerContainer');
                 dlg.style.position = 'fixed';
                 dlg.style.top = '0';
@@ -408,45 +408,41 @@
                 dlg.style.display = 'flex';
                 dlg.style.alignItems = 'center';
                 dlg.style.pointerEvents = 'none';
-
-                if (options.fullscreen) {
-                    dlg.style.zIndex = '1000';
-                }
-
-                if (options.backdropUrl) {
-                    dlg.style.backgroundImage = `url('${options.backdropUrl}')`;
-                    dlg.style.backgroundSize = 'cover';
-                    dlg.style.backgroundPosition = 'center';
-                }
-
                 document.body.insertBefore(dlg, document.body.firstChild);
-                this.setTransparency(2);
-                document.documentElement.classList.add('jmp-video-active');
-                this._videoDialog = dlg;
-
-                const player = window.api.player;
-                if (!this._hasConnection) {
-                    this._hasConnection = true;
-                    player.playing.connect(this.onPlaying);
-                    player.positionUpdate.connect(this.onTimeUpdate);
-                    player.finished.connect(this.onEnded);
-                    player.updateDuration.connect(this.onDuration);
-                    player.error.connect(this.onError);
-                    player.paused.connect(this.onPause);
-                    player.bufferedRangesUpdated.connect(this.onBufferedRangesUpdated);
-                }
-
-                if (options.fullscreen) {
-                    document.body.classList.add('hide-scroll');
-                }
-                return Promise.resolve();
-            } else {
-                document.documentElement.classList.add('jmp-video-active');
-                if (options.fullscreen) {
-                    document.body.classList.add('hide-scroll');
-                }
-                return Promise.resolve();
             }
+
+            dlg.style.backgroundColor = 'transparent';
+            if (options.fullscreen) {
+                dlg.style.zIndex = '1000';
+            }
+            if (options.backdropUrl) {
+                dlg.style.backgroundImage = `url('${options.backdropUrl}')`;
+                dlg.style.backgroundSize = 'cover';
+                dlg.style.backgroundPosition = 'center';
+            } else {
+                dlg.style.backgroundImage = '';
+            }
+
+            this.setTransparency(2);
+            document.documentElement.classList.add('jmp-video-active');
+            this._videoDialog = dlg;
+
+            const player = window.api.player;
+            if (!this._hasConnection) {
+                this._hasConnection = true;
+                player.playing.connect(this.onPlaying);
+                player.positionUpdate.connect(this.onTimeUpdate);
+                player.finished.connect(this.onEnded);
+                player.updateDuration.connect(this.onDuration);
+                player.error.connect(this.onError);
+                player.paused.connect(this.onPause);
+                player.bufferedRangesUpdated.connect(this.onBufferedRangesUpdated);
+            }
+
+            if (options.fullscreen) {
+                document.body.classList.add('hide-scroll');
+            }
+            return Promise.resolve();
         }
 
         canPlayMediaType(mediaType) {
