@@ -1,0 +1,12 @@
+# Xcode / CocoaPods / Build artifacts
+build/
+DerivedData/
+Pods/
+*.xcworkspace
+*.xcodeproj
+xcuserdata/
+*.ipa
+*.tipa
+*.dSYM.zip
+*.dSYM
+.DS_Store

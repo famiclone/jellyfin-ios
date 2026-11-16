@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Jellyfin Desktop</title>
+    <link rel="stylesheet" href="find-webclient.css">
+</head>
+<body>
+    <div id="container">
+        <img class="logo" src="logo.png" alt="Jellyfin">
+        <form id="connect-form">
+            <h1 id="title"></h1>
+            <div id="spinner"></div>
+            <input type="text" id="address" inputmode="url" autocapitalize="off" autocorrect="off" autocomplete="url" spellcheck="false">
+            <div id="error-box"></div>
+            <button id="connect-button" type="submit"></button>
+            <button id="cancel-button" type="button" class="cancel" style="display: none;">Cancel</button>
+            <label id="ssl-toggle-row">
+                <input type="checkbox" id="ignore-ssl-checkbox">
+                <span>Allow self-signed HTTPS certificates</span>
+            </label>
+        </form>
+    </div>
+    <script src="find-webclient.lang.js"></script>
+    <script src="find-webclient.js"></script>
+</body>
+</html>
