@@ -11,10 +11,14 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: build-ios-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-ipa:
     name: Build iPadOS 15+ arm64 IPA
-    runs-on: macos-15
+    runs-on: macos-latest
     timeout-minutes: 30
 
     steps:
@@ -46,7 +50,11 @@ jobs:
       - name: Generate Xcode project & install MobileVLCKit
         run: |
           xcodegen generate
-          pod install --repo-update
+          if [ -d "Pods/MobileVLCKit" ]; then
+            pod install --no-repo-update
+          else
+            pod install --repo-update
+          fi
 
       - name: Build Release arm64 (iOS 15.0 deployment target, unsigned)
         run: |
